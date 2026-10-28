@@ -34,12 +34,11 @@ EOF
     SSH_PORTS=$(grep -oE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | grep -oE '[0-9]+' | paste -sd, -)
     [ -z "$SSH_PORTS" ] && SSH_PORTS="22"
     PANEL_PORT=$(/app/x-ui setting -show true 2>/dev/null | grep -Eo 'port: .+' | awk '{print $2}')
-    # Honor the runtime override used for the panel backend behind Nginx.
+    # Panel backend is behind Nginx in OMID public HTTPS mode.
     [ -n "${XUI_PORT:-}" ] && PANEL_PORT="$XUI_PORT"
     EXEMPT_PORTS="$SSH_PORTS"
     [ -n "$PANEL_PORT" ] && EXEMPT_PORTS="$EXEMPT_PORTS,$PANEL_PORT"
-    # The public app port is handled by Nginx; keep it reachable when IP-limit bans apply.
-    EXEMPT_PORTS="$EXEMPT_PORTS,2053"
+    EXEMPT_PORTS="$EXEMPT_PORTS,2053" # Nginx public port
 
     cat > /etc/fail2ban/action.d/3x-ipl.conf << EOF
 [INCLUDES]
@@ -82,6 +81,5 @@ if [ -f /root/.acme.sh/acme.sh ]; then
     crond
 fi
 
-# Run the panel backend and Nginx under supervisord. Nginx owns the single
-# application port exposed by Lucity and proxies panel, subscription and WS paths.
+# Run panel and Nginx under Supervisor for the OMID reverse-proxy image.
 exec /usr/bin/supervisord -n -c /etc/supervisord.conf

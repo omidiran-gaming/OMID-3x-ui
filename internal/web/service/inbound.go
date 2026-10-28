@@ -26,6 +26,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/util/maskcompat"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/netsafe"
 	wgutil "github.com/mhsanaei/3x-ui/v3/internal/util/wireguard"
+	"github.com/mhsanaei/3x-ui/v3/internal/web/runtime"
 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
 
 	"gorm.io/gorm"
@@ -665,6 +666,7 @@ func (s *InboundService) normalizeStreamSettings(inbound *model.Inbound) {
 	}
 	inbound.StreamSettings = canonicalizeStreamNetworkKey(inbound.StreamSettings)
 	inbound.StreamSettings = canonicalizeLegacyXdnsMasks(inbound.StreamSettings)
+	inbound.StreamSettings = canonicalizeXDriveService(inbound.StreamSettings)
 }
 
 // canonicalizeLegacyXdnsMasks stores an xdns mask posted in a pre-26.10.10 shape in
@@ -995,6 +997,143 @@ func validateFinalMaskXmcProfiles(streamSettings string) error {
 	return common.NewError("XMC finalmask requires at least one complete Minecraft profile — each needs a username (3-16 of A-Z a-z 0-9 _), a UUID, and both texture fields from Mojang's session server (XTLS/Xray-core#6487). Complete the profiles or remove the XMC mask.")
 }
 
+// validateFinalMaskSalamander refuses at save a salamander password the core loads and then refuses
+// when the listener opens, which stops every other inbound with it.
+func validateFinalMaskSalamander(streamSettings string) error {
+	var stream map[string]any
+	if json.Unmarshal([]byte(streamSettings), &stream) != nil {
+		return nil
+	}
+	return maskcompat.CheckSalamanderPasswords(stream["finalmask"])
+}
+
+const (
+	xdriveServiceGoogleDrive       = "google-drive"
+	xdriveServiceGoogleDriveLegacy = "Google Drive"
+)
+
+// validateXDriveStorage refuses at save the XDRIVE storage xray-core refuses when an inbound starts
+// listening (stopping every inbound) or an outbound dials.
+func validateXDriveStorage(streamSettings string) error {
+	var stream struct {
+		Network        string `json:"network"`
+		XDriveSettings struct {
+			Service      string          `json:"service"`
+			RemoteFolder string          `json:"remoteFolder"`
+			Secrets      []string        `json:"secrets"`
+			Template     json.RawMessage `json:"template"`
+		} `json:"xdriveSettings"`
+	}
+	if json.Unmarshal([]byte(streamSettings), &stream) != nil || stream.Network != "xdrive" {
+		return nil
+	}
+	xd := stream.XDriveSettings
+	hasFolder := strings.TrimSpace(xd.RemoteFolder) != ""
+	switch xd.Service {
+	case "local":
+		if !hasFolder {
+			return common.NewError(`XDRIVE needs a "remoteFolder": the local folder both ends share.`)
+		}
+	case xdriveServiceGoogleDrive, xdriveServiceGoogleDriveLegacy:
+		if !hasFolder {
+			return common.NewError(`XDRIVE needs a "remoteFolder": the id of the shared Google Drive folder.`)
+		}
+		if len(xd.Secrets) != 3 || slices.ContainsFunc(xd.Secrets, func(s string) bool { return strings.TrimSpace(s) == "" }) {
+			return common.NewError("Google Drive needs 3 secrets, in order: ClientID, ClientSecret, RefreshToken.")
+		}
+	case "template":
+		if len(xd.Template) == 0 || string(xd.Template) == "null" {
+			return common.NewError(`XDRIVE service "template" needs a "template" object describing the storage API.`)
+		}
+		return validateXDriveTemplate(xd.Template)
+	default:
+		return common.NewError(fmt.Sprintf("unsupported XDRIVE service %q: use local, google-drive or template.", xd.Service))
+	}
+	return nil
+}
+
+// validateXDriveInbound refuses what xray-core 26.10.17 refuses on an XDRIVE inbound (#7182): any
+// protocol but VLESS, and VLESS without "decryption". Flow is never emitted there and the port is single.
+func validateXDriveInbound(protocol, settings, streamSettings string) error {
+	var stream struct {
+		Network string `json:"network"`
+	}
+	if json.Unmarshal([]byte(streamSettings), &stream) != nil || stream.Network != "xdrive" {
+		return nil
+	}
+	if protocol != string(model.VLESS) {
+		return common.NewError(fmt.Sprintf("XDRIVE carries only VLESS, not %s.", protocol))
+	}
+	var vless struct {
+		Decryption string `json:"decryption"`
+	}
+	_ = json.Unmarshal([]byte(settings), &vless)
+	if !vlessEncValueSet(vless.Decryption) {
+		return common.NewError(`XDRIVE needs VLESS encryption: set the inbound's Decryption.`)
+	}
+	return nil
+}
+
+// canonicalizeXDriveService stores the "google-drive" service xray-core 26.10.17 names
+// (#7182) in place of "Google Drive", which it still reads with a deprecation warning.
+func canonicalizeXDriveService(streamSettings string) string {
+	var stream map[string]any
+	if json.Unmarshal([]byte(streamSettings), &stream) != nil {
+		return streamSettings
+	}
+	xd, _ := stream["xdriveSettings"].(map[string]any)
+	if xd == nil || xd["service"] != xdriveServiceGoogleDriveLegacy {
+		return streamSettings
+	}
+	xd["service"] = xdriveServiceGoogleDrive
+	out, err := json.MarshalIndent(stream, "", "  ")
+	if err != nil {
+		return streamSettings
+	}
+	return string(out)
+}
+
+// validateXDriveTemplate applies the checks of xray-core's newTemplateStorage
+// (transport/internet/xdrive/template.go), which only run once the listener starts.
+func validateXDriveTemplate(raw json.RawMessage) error {
+	type op struct {
+		URL        string `json:"url"`
+		NamesRegex string `json:"namesRegex"`
+	}
+	var tmpl struct {
+		Put    op `json:"put"`
+		Get    op `json:"get"`
+		Delete op `json:"delete"`
+		List   op `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &tmpl); err != nil {
+		return common.NewError("XDRIVE template is not a valid storage template:", err)
+	}
+	if tmpl.Put.URL == "" || tmpl.Get.URL == "" || tmpl.List.URL == "" || tmpl.Delete.URL == "" {
+		return common.NewError("XDRIVE template needs put, get, list and delete operations, each with a url.")
+	}
+	if tmpl.List.NamesRegex == "" {
+		return common.NewError("XDRIVE template list needs a namesRegex.")
+	}
+	names, err := regexp.Compile(tmpl.List.NamesRegex)
+	if err != nil {
+		return common.NewError("XDRIVE template namesRegex does not compile:", err)
+	}
+	if names.NumSubexp() < 1 {
+		return common.NewError("XDRIVE template namesRegex needs one capture group for the object name.")
+	}
+	return nil
+}
+
+// validateFinalMaskJSONSalamander checks a stored whole finalmask: a host's, or the subscription's.
+func validateFinalMaskJSONSalamander(finalmask string) error {
+	var fm map[string]any
+	if json.Unmarshal([]byte(finalmask), &fm) != nil {
+		return nil
+	}
+	return maskcompat.CheckSalamanderPasswords(fm)
+}
+
 // normalizeMtprotoSecret rebuilds every mtproto client's FakeTLS secret so it is
 // always valid before the row is persisted, and drops the vestigial inbound-level
 // secret and adTag: MTProto is multi-client, so mtg and every share link read
@@ -1137,6 +1276,7 @@ func (s *InboundService) normalizeMtprotoXrayPort(inbound *model.Inbound, oldSet
 // then saves the inbound to the database and optionally adds it to the running Xray instance.
 // Returns the created inbound, whether Xray needs restart, and any error.
 func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	defer InvalidateSubData()
 	inbound.Id = 0
 	if err := normalizeTuicSettings(inbound); err != nil {
 		return inbound, false, err
@@ -1156,11 +1296,23 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err := validateFinalMaskXmcProfiles(inbound.StreamSettings); err != nil {
 		return inbound, false, err
 	}
+	if err := validateFinalMaskSalamander(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateXDriveStorage(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateXDriveInbound(string(inbound.Protocol), inbound.Settings, inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateShadowsocks2022Inbound(inbound.Protocol, inbound.Settings); err != nil {
+		return inbound, false, err
+	}
 	s.normalizeMtprotoSecret(inbound)
 	if err := s.normalizeMtprotoXrayPort(inbound, ""); err != nil {
 		return inbound, false, err
 	}
-	if err := s.normalizeAmneziaWGSettings(inbound, ""); err != nil {
+	if err := s.normalizeAmneziaWGSettings(inbound, nil); err != nil {
 		return inbound, false, err
 	}
 	if inbound.NodeID != nil {
@@ -1185,6 +1337,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		return inbound, false, err
 	}
 	if err := validateClientsRenewal(clients); err != nil {
+		return inbound, false, err
+	}
+	if err := validateClientsKeepAlive(inbound.Protocol, clients); err != nil {
 		return inbound, false, err
 	}
 	for _, traffic := range inbound.ClientStats {
@@ -1258,6 +1413,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 			if client.PublicKey == "" {
 				return inbound, false, common.NewError("wireguard client requires a key")
 			}
+			if _, err := normalizeWireguardAllowedIPs(client.AllowedIPs); err != nil {
+				return inbound, false, err
+			}
 		case "mtproto":
 			if client.Secret == "" {
 				return inbound, false, common.NewError("mtproto client requires a secret")
@@ -1282,6 +1440,10 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		}
 	}
 
+	if err := validateTuicClientEmails(inbound.Protocol, clients); err != nil {
+		return inbound, false, err
+	}
+
 	needRestart := false
 	var postCommitApply func()
 	err = runSerializedTx(func(tx *gorm.DB) error {
@@ -1296,9 +1458,8 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		if err := tx.Omit("ClientStats").Save(inbound).Error; err != nil {
 			return err
 		}
-		// The relay port is derived from the id, only known after Save, and only a
-		// local row owns one: checkPortConflictTx ran no relay check with ignoreId==0.
-		if inbound.NodeID == nil && inbound.Protocol == model.AmneziaWG {
+		// Embedded AmneziaWG owns a relay port derived from its local row id.
+		if inbound.NodeID == nil && inbound.Protocol == model.AmneziaWG && !amneziawgKernelMode(inbound) {
 			if self := amneziawgnetSocksSelfConflict(inbound, inbound.Id); self != "" {
 				return common.NewError(self)
 			}
@@ -1441,6 +1602,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 }
 
 func (s *InboundService) DelInbound(id int) (bool, error) {
+	defer InvalidateSubData()
 	needRestart, nodePush, err := s.delInbound(id)
 	if nodePush != nil {
 		nodePush()
@@ -1497,14 +1659,14 @@ func (s *InboundService) delInbound(id int) (bool, func(), error) {
 		logger.Debug("DelInbound: inbound not found, id:", id)
 	}
 
-	if err := db.Transaction(func(tx *gorm.DB) error {
+	if err := runSerializedTx(func(tx *gorm.DB) error {
 		if err := s.clientService.DetachInbound(tx, id); err != nil {
 			return err
 		}
 		if err := tx.Delete(model.Inbound{}, id).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("inbound_id = ?", id).Delete(&model.Host{}).Error; err != nil {
+		if _, err := database.DeleteHosts(tx, "inbound_id = ?", id); err != nil {
 			return err
 		}
 		// Drop the deleted inbound from any sub-balancer that selects it; a
@@ -1573,6 +1735,7 @@ type BulkDelInboundReport struct {
 // the rest; the aggregated needRestart is returned so the caller restarts
 // xray at most once.
 func (s *InboundService) DelInbounds(ids []int) (BulkDelInboundResult, bool, error) {
+	defer InvalidateSubData()
 	result := BulkDelInboundResult{}
 	needRestart := false
 	var pushIDs []int
@@ -1625,6 +1788,7 @@ func (s *InboundService) GetInboundDetail(id int) (*model.Inbound, error) {
 // SetInboundSubSortIndex changes only the subscription sort order, so a
 // reorder cannot carry a stale settings/client payload over another edit.
 func (s *InboundService) SetInboundSubSortIndex(id int, index int) error {
+	defer InvalidateSubData()
 	index = normalizeSubSortIndex(index)
 	inbound, err := s.GetInbound(id)
 	if err != nil {
@@ -1671,6 +1835,7 @@ func (s *InboundService) SetInboundSubSortIndex(id int, index int) error {
 }
 
 func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
+	defer InvalidateSubData()
 	inbound, err := s.GetInbound(id)
 	if err != nil {
 		return false, err
@@ -1754,12 +1919,22 @@ func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
 	return needRestart, nil
 }
 
-func (s *InboundService) validateUpdatedInboundClients(inbound *model.Inbound) error {
+func (s *InboundService) validateUpdatedInboundClients(inbound, existing *model.Inbound) error {
 	clients, err := s.GetClients(inbound)
 	if err != nil {
 		return err
 	}
 	if err := validateClientsRenewal(clients); err != nil {
+		return err
+	}
+	var existingClients []model.Client
+	if inbound.Protocol == existing.Protocol {
+		existingClients, err = s.GetClients(existing)
+		if err != nil {
+			return err
+		}
+	}
+	if err := validateClientsKeepAliveAgainstExisting(inbound.Protocol, clients, existingClients); err != nil {
 		return err
 	}
 	for _, client := range clients {
@@ -1771,6 +1946,10 @@ func (s *InboundService) validateUpdatedInboundClients(inbound *model.Inbound) e
 		case model.MASQUE:
 			if client.Password == "" {
 				return common.NewError("empty client ID")
+			}
+		case model.WireGuard, model.AmneziaWG:
+			if _, err := normalizeWireguardAllowedIPs(client.AllowedIPs); err != nil {
+				return err
 			}
 		case model.TUIC:
 			if client.ID == "" {
@@ -1784,10 +1963,11 @@ func (s *InboundService) validateUpdatedInboundClients(inbound *model.Inbound) e
 			}
 		}
 	}
-	return nil
+	return validateTuicClientEmails(inbound.Protocol, clients)
 }
 
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	defer InvalidateSubData()
 	legacyShareAddr := legacyMtprotoShareAddr(inbound)
 	inbound.TrafficResetDay = normalizeTrafficResetDay(inbound.TrafficResetDay)
 	// Normalize streamSettings based on protocol
@@ -1796,6 +1976,18 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		return inbound, false, err
 	}
 	if err := validateFinalMaskXmcProfiles(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateFinalMaskSalamander(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateXDriveStorage(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateXDriveInbound(string(inbound.Protocol), inbound.Settings, inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateShadowsocks2022Inbound(inbound.Protocol, inbound.Settings); err != nil {
 		return inbound, false, err
 	}
 	s.normalizeMtprotoSecret(inbound)
@@ -1810,7 +2002,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	if err := normalizeTuicSettings(inbound); err != nil {
 		return inbound, false, err
 	}
-	if err := s.normalizeAmneziaWGSettings(inbound, oldInbound.Settings); err != nil {
+	if err := s.normalizeAmneziaWGSettings(inbound, oldInbound); err != nil {
 		return inbound, false, err
 	}
 	inbound.SubSortIndex = normalizeSubSortIndex(inbound.SubSortIndex)
@@ -1855,6 +2047,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		if err := tx.First(stored, inbound.Id).Error; err != nil {
 			return err
 		}
+		running := *stored
 		oldInbound = stored
 		// The form posts back the clients and enable it loaded; both have their
 		// own endpoints, so only a master's push may change them here.
@@ -1863,7 +2056,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			inbound.Enable = stored.Enable
 		}
 		// On the clients actually saved: a protocol switch keeps the stored ones.
-		if err := s.validateUpdatedInboundClients(inbound); err != nil {
+		if err := s.validateUpdatedInboundClients(inbound, stored); err != nil {
 			return err
 		}
 		conflict, cErr := checkPortConflictTx(tx, inbound, inbound.Id)
@@ -1874,6 +2067,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			return common.NewError(conflict.String())
 		}
 		if err := s.updateClientTraffics(tx, oldInbound, inbound); err != nil {
+			return err
+		}
+		if err := database.SyncHostsFromExternalProxy(tx, inbound.Id, running.StreamSettings, inbound.StreamSettings); err != nil {
 			return err
 		}
 
@@ -2004,7 +2200,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			}
 			if !push {
 				needRestart = true
-			} else if oldProtocol == model.MTProto || oldInbound.Protocol == model.MTProto || oldProtocol == model.TUIC || oldInbound.Protocol == model.TUIC {
+			} else if servedOutsideXray(oldProtocol) || servedOutsideXray(oldInbound.Protocol) {
 				oldSnapshot := *oldInbound
 				oldSnapshot.Tag = tag
 				oldSnapshot.Protocol = oldProtocol
@@ -2018,7 +2214,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 						pushable = false
 					}
 				}
-				newProtocolIsSidecar := oldInbound.Protocol == model.MTProto || oldInbound.Protocol == model.TUIC
+				newProtocolIsSidecar := servedOutsideXray(oldInbound.Protocol)
 				if pushable {
 					postCommitApply = func() {
 						if err2 := rt.UpdateInbound(context.Background(), &oldSnapshot, payload); err2 == nil {
@@ -2034,7 +2230,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			} else {
 				oldSnapshot := *oldInbound
 				oldSnapshot.Tag = tag
-				var runtimeInbound *model.Inbound
+				var runtimeInbound, runningInbound *model.Inbound
 				if inbound.Enable {
 					var err2 error
 					runtimeInbound, err2 = s.buildInboundForLocalRuntime(tx, oldInbound)
@@ -2043,7 +2239,15 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 						needRestart = true
 					}
 				}
+				if runtimeInbound != nil && running.Enable {
+					// Unbuildable means unknown running state: the rebuild below covers it.
+					runningInbound, _ = s.buildInboundForLocalRuntime(tx, &running)
+				}
 				postCommitApply = func() {
+					if runningInbound != nil && applyInboundUserOps(rt, runningInbound, runtimeInbound) {
+						logger.Debug("Inbound clients updated in place on", rt.Name(), ":", oldInbound.Tag)
+						return
+					}
 					if err2 := rt.DelInbound(context.Background(), &oldSnapshot); err2 == nil {
 						logger.Debug("Old inbound deleted on", rt.Name(), ":", tag)
 					}
@@ -2067,6 +2271,17 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 
 		if err := tx.Save(oldInbound).Error; err != nil {
 			return err
+		}
+		// A master's running fallback was built from this child's listen, port and PROXY flag;
+		// re-adding only the child would leave the master pointing at the old ones.
+		if fallbackTargetChanged(&running, oldInbound) {
+			linked, err := s.fallbackService.HasDerivedFallbackTo(tx, oldInbound.Id)
+			if err != nil {
+				return err
+			}
+			if linked {
+				needRestart = true
+			}
 		}
 		newClients, gcErr := s.GetClients(oldInbound)
 		if gcErr != nil {
@@ -2106,6 +2321,41 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		}
 	}
 	return inbound, needRestart, nil
+}
+
+// servedOutsideXray: these protocols run under their own manager, whose update
+// reconfigures in place where a Del+Add would drop every live session.
+func servedOutsideXray(protocol model.Protocol) bool {
+	return protocol == model.MTProto || protocol == model.TUIC || protocol == model.AmneziaWG
+}
+
+// applyInboundUserOps reports whether per-user core ops moved running to next, so
+// its listener and live connections survive; false means rebuild the handler.
+func applyInboundUserOps(rt runtime.Runtime, running, next *model.Inbound) bool {
+	diff, ok := xray.InboundUserOps(running.GenXrayInboundConfig(), next.GenXrayInboundConfig())
+	if !ok {
+		return false
+	}
+	ctx := context.Background()
+	for _, u := range diff.RemovedUsers {
+		if err := rt.RemoveUser(ctx, next, u.Email); err != nil && !xray.IsMissingUserErr(err) {
+			logger.Debug("Unable to remove client", u.Email, "in place on", rt.Name(), ":", err)
+			return false
+		}
+	}
+	for _, u := range diff.AddedUsers {
+		err := rt.AddUser(ctx, next, u.User)
+		if xray.IsUserExistsErr(err) {
+			if err = rt.RemoveUser(ctx, next, u.Email); err == nil {
+				err = rt.AddUser(ctx, next, u.User)
+			}
+		}
+		if err != nil {
+			logger.Debug("Unable to add client", u.Email, "in place on", rt.Name(), ":", err)
+			return false
+		}
+	}
+	return true
 }
 
 // A node mirrors this payload into its own DB, so every client must survive:
@@ -2259,7 +2509,7 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 		if _, kept := newEmails[email]; kept {
 			continue
 		}
-		stillUsed, err := s.emailUsedByOtherInbounds(email, oldInbound.Id)
+		stillUsed, err := s.emailUsedByOtherInbounds(tx, email, oldInbound.Id)
 		if err != nil {
 			return err
 		}

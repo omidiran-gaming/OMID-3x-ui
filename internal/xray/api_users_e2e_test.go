@@ -111,6 +111,7 @@ func startE2ECore(t *testing.T, inbounds []any) *e2eCore {
 		t.Fatalf("api init: %v", err)
 	}
 	t.Cleanup(api.Close)
+	waitForXrayAPIReady(t, api, apiPort)
 	return &e2eCore{api: api, cmd: cmd, port: apiPort}
 }
 
@@ -145,7 +146,7 @@ func panelUser(email string, fields map[string]any) map[string]any {
 
 // TestXrayAPI_E2E_Users runs the panel's add/remove user surface against a live
 // core for every protocol it builds accounts for, pinning the error texts
-// IsUserExistsErr and IsMissingHandlerErr match on.
+// IsUserExistsErr, IsMissingHandlerErr and IsMissingUserErr match on.
 func TestXrayAPI_E2E_Users(t *testing.T) {
 	c := startE2ECore(t, []any{
 		map[string]any{
@@ -248,6 +249,9 @@ func TestXrayAPI_E2E_Users(t *testing.T) {
 			if !IsMissingHandlerErr(err) {
 				t.Fatalf("missing-user error not matched by IsMissingHandlerErr: %q", err)
 			}
+			if !IsMissingUserErr(err) {
+				t.Fatalf("missing-user error not matched by IsMissingUserErr: %q", err)
+			}
 		})
 	}
 
@@ -258,6 +262,13 @@ func TestXrayAPI_E2E_Users(t *testing.T) {
 		}
 		if !IsMissingHandlerErr(err) {
 			t.Fatalf("unknown-tag error not matched by IsMissingHandlerErr: %q", err)
+		}
+		err = c.api.RemoveUser("no-such-tag", "e2e-ghost")
+		if err == nil {
+			t.Fatal("RemoveUser on an unknown tag must fail")
+		}
+		if IsMissingUserErr(err) {
+			t.Fatalf("a missing handler must not read as a missing user: %q", err)
 		}
 	})
 }

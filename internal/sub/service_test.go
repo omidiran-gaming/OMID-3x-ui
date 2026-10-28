@@ -634,6 +634,36 @@ func TestBuildVmessLink(t *testing.T) {
 	}
 }
 
+// Xray drops cipherSuites under every uTLS fingerprint and reads an empty one as
+// chrome, so a vmess link with cs and no fingerprint must carry fp=unsafe.
+func TestBuildVmessLink_CipherSuitesPinUnsafeFingerprint(t *testing.T) {
+	cases := []struct {
+		name   string
+		obj    map[string]any
+		wantFp any
+	}{
+		{"cs with empty fp", map[string]any{"cs": "TLS_AES_128_GCM_SHA256", "fp": ""}, "unsafe"},
+		{"cs with no fp key", map[string]any{"cs": "TLS_AES_128_GCM_SHA256"}, "unsafe"},
+		{"cs with explicit fp", map[string]any{"cs": "TLS_AES_128_GCM_SHA256", "fp": "firefox"}, "firefox"},
+		{"no cs", map[string]any{"fp": ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(buildVmessLink(tc.obj), "vmess://"))
+			if err != nil {
+				t.Fatalf("base64 decode failed: %v", err)
+			}
+			var roundTrip map[string]any
+			if err := json.Unmarshal(decoded, &roundTrip); err != nil {
+				t.Fatalf("decoded payload is not JSON: %v", err)
+			}
+			if roundTrip["fp"] != tc.wantFp {
+				t.Fatalf("fp = %#v, want %#v", roundTrip["fp"], tc.wantFp)
+			}
+		})
+	}
+}
+
 func TestCloneVmessShareObj_CopiesEverythingByDefault(t *testing.T) {
 	base := map[string]any{
 		"v":    "2",
@@ -827,6 +857,35 @@ func TestApplyExternalProxyTLSParams_SetsPinnedPeerCert(t *testing.T) {
 
 	if params["pcs"] != "aa11,bb22" {
 		t.Fatalf("pcs = %q, want aa11,bb22", params["pcs"])
+	}
+}
+
+func TestApplyExternalProxyTLSParams_SetsCipherSuites(t *testing.T) {
+	params := map[string]string{"security": "tls"}
+	ep := map[string]any{
+		"dest":         "proxy.example.com",
+		"cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256",
+	}
+
+	applyExternalProxyTLSParams(ep, params, "tls")
+
+	if params["cs"] != "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" {
+		t.Fatalf("cs = %q, want TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256", params["cs"])
+	}
+}
+
+func TestApplyShareTLSParams_SetsCipherSuites(t *testing.T) {
+	stream := map[string]any{
+		"security": "tls",
+		"tlsSettings": map[string]any{
+			"cipherSuites": "TLS_AES_128_GCM_SHA256",
+		},
+	}
+	params := map[string]string{}
+	applyShareTLSParams(stream, params)
+
+	if params["cs"] != "TLS_AES_128_GCM_SHA256" {
+		t.Fatalf("cs = %q, want TLS_AES_128_GCM_SHA256", params["cs"])
 	}
 }
 
@@ -1191,6 +1250,20 @@ func TestMarshalFinalMask_KeepsSudokuUdpMask(t *testing.T) {
 		t.Fatal("expected ok=true for a sudoku udp mask")
 	}
 	if want := `{"udp":[{"settings":{"password":"s3cr3t"},"type":"sudoku"}]}`; out != want {
+		t.Fatalf("marshalFinalMask = %s, want %s", out, want)
+	}
+}
+
+// A share link's fm= is what a client dials with; a udphop listed before another UDP mask
+// makes the core refuse every dial ("incorrect index"), so the link carries it last.
+func TestMarshalFinalMask_PutsUDPHopLast(t *testing.T) {
+	fm := map[string]any{"udp": []any{
+		map[string]any{"type": "udphop", "settings": map[string]any{"mode": "intervalRemote", "remotePorts": "20000-30000"}},
+		map[string]any{"type": "salamander", "settings": map[string]any{"password": "s3cr3t"}},
+	}}
+	out, ok := marshalFinalMask(fm)
+	want := `{"udp":[{"settings":{"password":"s3cr3t"},"type":"salamander"},{"settings":{"mode":"intervalRemote","remotePorts":"20000-30000"},"type":"udphop"}]}`
+	if !ok || out != want {
 		t.Fatalf("marshalFinalMask = %s, want %s", out, want)
 	}
 }

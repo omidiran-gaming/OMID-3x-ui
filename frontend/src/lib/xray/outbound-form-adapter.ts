@@ -1,6 +1,8 @@
 import { XHttpXmuxSchema } from '@/schemas/protocols/stream/xhttp';
+import { liftLegacyXDriveService } from '@/schemas/protocols/stream/xdrive';
 import { OutboundDomainStrategySchema } from '@/schemas/protocols/outbound';
 import { AmneziaWGOutboundSettingsSchema } from '@/schemas/protocols/outbound';
+import { canEnableTlsFlow } from '@/lib/xray/protocol-capabilities';
 import {
   dropEmptyFinalMask,
   normalizeStreamSettingsForWire,
@@ -569,6 +571,7 @@ function hydrateStreamForm(stream: Raw): OutboundStreamFormValues {
     next.network = next.method;
   }
   delete next.method;
+  liftLegacyXDriveService(next);
   const xh = next.xhttpSettings;
   if (xh && typeof xh === 'object' && !Array.isArray(xh)) {
     const xhttp = { ...(xh as Raw) };
@@ -902,10 +905,23 @@ function stripUiOnlyStreamFields(stream: unknown): Raw {
   return normalizeStreamSettingsForWire(next, { side: 'outbound' }) as Raw;
 }
 
+// The flow select only hides off a Vision-capable transport; its stale value must not reach xray.
+export function effectiveVlessFlow(
+  settings: Pick<VlessOutboundFormSettings, 'flow' | 'encryption'>,
+  stream: { network?: string; security?: string } | undefined,
+): string {
+  const allowed = canEnableTlsFlow({
+    protocol: 'vless',
+    settings: { encryption: settings.encryption },
+    streamSettings: { network: stream?.network, security: stream?.security },
+  });
+  return allowed ? settings.flow : '';
+}
+
 function muxAllowed(values: OutboundFormValues): boolean {
   if (!MUX_PROTOCOLS.has(values.protocol)) return false;
   const flow =
-    values.protocol === 'vless' ? (values.settings as VlessOutboundFormSettings).flow : '';
+    values.protocol === 'vless' ? effectiveVlessFlow(values.settings, values.streamSettings) : '';
   if (flow) return false;
   const network =
     values.streamSettings && 'network' in values.streamSettings
@@ -924,7 +940,10 @@ export function formValuesToWirePayload(values: OutboundFormValues): WireOutboun
       settings = vmessToWire(values.settings);
       break;
     case 'vless':
-      settings = vlessToWire(values.settings);
+      settings = vlessToWire({
+        ...values.settings,
+        flow: effectiveVlessFlow(values.settings, values.streamSettings),
+      });
       break;
     case 'trojan':
       settings = trojanToWire(values.settings);

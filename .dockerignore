@@ -8,3 +8,4 @@ pgdata
 x-ui/
 *.db
 *.dump
+.omid/

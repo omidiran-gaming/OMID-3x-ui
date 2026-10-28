@@ -83,6 +83,7 @@ var defaultValueMap = map[string]string{
 	"remarkTemplate":              DefaultRemarkTemplate,
 	"subShowIdentityOnAllLinks":   "false",
 	"subInfoNodeEnable":           "false",
+	"subHostSortMode":             "inbound-first",
 	"subCalendarExpireInclusive":  "false",
 	"subExpiredTemplate":          DefaultSubExpiredTemplate,
 	"subTrafficDepletedTemplate":  DefaultSubTrafficDepletedTemplate,
@@ -186,6 +187,7 @@ var defaultValueMap = map[string]string{
 	"subClashURI":                 "",
 	"subClashEnableRouting":       "false",
 	"subClashRules":               "",
+	"subClashRemoteDNS":           "false",
 	"subJsonMux":                  "",
 	"subJsonRules":                "",
 	"subJsonRoutingRules":         "",
@@ -236,6 +238,8 @@ var defaultValueMap = map[string]string{
 
 	// Consecutive failed observatory probes before an outbound.down event fires
 	"outboundDownThreshold": "3",
+
+	"nodeDownThreshold": "1",
 
 	// Email (SMTP) notifications
 	"smtpEnable":         "false",
@@ -397,9 +401,17 @@ func (s *SettingService) ResetSettings() error {
 			return err
 		}
 		paths := []model.Setting{
-			{Key: "subPath", Value: "/sub/"},
-			{Key: "subJsonPath", Value: "/Json/"},
-			{Key: "subClashPath", Value: "/Clash/"},
+			{Key: "subPath", Value: "/" + random.NumLower(16) + "/"},
+			{Key: "subJsonPath", Value: "/" + random.NumLower(16) + "/"},
+			{Key: "subClashPath", Value: "/" + random.NumLower(16) + "/"},
+		}
+		// OMID OVERLAY: Nginx exposes stable public routes on restricted hosts.
+		if os.Getenv("XUI_SUB_PUBLIC_HTTPS") == "true" {
+			paths = []model.Setting{
+				{Key: "subPath", Value: "/sub/"},
+				{Key: "subJsonPath", Value: "/json/"},
+				{Key: "subClashPath", Value: "/clash/"},
+			}
 		}
 		return tx.Create(&paths).Error
 	})
@@ -765,6 +777,10 @@ func (s *SettingService) GetSubShowIdentityOnAllLinks() (bool, error) {
 
 func (s *SettingService) GetSubInfoNodeEnable() (bool, error) {
 	return s.getBool("subInfoNodeEnable")
+}
+
+func (s *SettingService) GetSubHostSortMode() (string, error) {
+	return s.getString("subHostSortMode")
 }
 
 func (s *SettingService) GetSubCalendarExpireInclusive() (bool, error) {
@@ -1241,6 +1257,10 @@ func (s *SettingService) GetSubClashRules() (string, error) {
 	return s.getString("subClashRules")
 }
 
+func (s *SettingService) GetSubClashRemoteDNS() (bool, error) {
+	return s.getBool("subClashRemoteDNS")
+}
+
 func (s *SettingService) GetSubJsonMux() (string, error) {
 	return s.getString("subJsonMux")
 }
@@ -1636,6 +1656,14 @@ func (s *SettingService) SetOutboundDownThreshold(value int) error {
 	return s.setInt("outboundDownThreshold", value)
 }
 
+func (s *SettingService) GetNodeDownThreshold() (int, error) {
+	return s.getInt("nodeDownThreshold")
+}
+
+func (s *SettingService) SetNodeDownThreshold(value int) error {
+	return s.setInt("nodeDownThreshold", value)
+}
+
 // SecretClears marks redacted secrets the user explicitly emptied. Without a
 // flag, a blank submitted secret means "unchanged" (the field is always served
 // blank to the browser) and the stored value is preserved.
@@ -1647,6 +1675,13 @@ type SecretClears struct {
 }
 
 func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting, clears SecretClears) error {
+	switch allSetting.SubHostSortMode {
+	case "":
+		allSetting.SubHostSortMode = "inbound-first"
+	case "inbound-first", "hosts-first":
+	default:
+		return errors.New("subscription host sort mode must be inbound-first or hosts-first")
+	}
 	switch allSetting.SubProfileMode {
 	case "", SubProfileModeNone, SubProfileModeBuiltin, SubProfileModeCustom:
 		allSetting.SubProfileMode = effectiveSubProfileMode(allSetting.SubProfileMode, allSetting.SubProfileUrl)
@@ -1663,6 +1698,9 @@ func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting, clears 
 		return err
 	}
 	if err := validateSubJsonDnsSetting(allSetting); err != nil {
+		return err
+	}
+	if err := validateFinalMaskJSONSalamander(allSetting.SubJsonFinalMask); err != nil {
 		return err
 	}
 	if err := allSetting.CheckValid(); err != nil {
@@ -1906,27 +1944,22 @@ func (s *SettingService) BuildSubURIBase(host string) string {
 	subDomain, _ := s.GetSubDomain()
 	subKeyFile, _ := s.GetSubKeyFile()
 	subCertFile, _ := s.GetSubCertFile()
-
 	subTLS := subKeyFile != "" && subCertFile != ""
-
 	if subDomain == "" {
 		subDomain = extractHostname(host)
 	}
 
-	// Lucity terminates public HTTPS and forwards requests internally.
+	// OMID OVERLAY: public HTTPS terminates at the platform proxy.
 	if os.Getenv("XUI_SUB_PUBLIC_HTTPS") == "true" {
 		return "https://" + subDomain
 	}
-
 	scheme := "http"
 	if subTLS {
 		scheme = "https"
 	}
-
 	if (subPort == 443 && subTLS) || (subPort == 80 && !subTLS) {
 		return scheme + "://" + subDomain
 	}
-
 	return fmt.Sprintf("%s://%s:%d", scheme, subDomain, subPort)
 }
 

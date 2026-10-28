@@ -125,9 +125,14 @@ that folder instead of accepting connections on its port. Both sides must use th
 **same** service, folder and secrets, so the JSON subscription ships them to every
 client; XDRIVE inbounds get no share link or Clash entry.
 
+Since Xray 26.10.17 XDRIVE carries only **VLESS** inside **VLESS encryption**, with
+no flow: an inbound needs a `decryption` value, an outbound its `encryption` and Mux
+enabled. The panel offers XDRIVE only for VLESS, refuses to save an inbound without
+`decryption`, and leaves one stored before the upgrade out of the running config.
+
 | Field          | Default        | Meaning                                                                 |
 | -------------- | -------------- | ----------------------------------------------------------------------- |
-| `service`      | `Google Drive` | `Google Drive`, `local` (a folder on disk) or `template` (any HTTP storage API). |
+| `service`      | `google-drive` | `google-drive`, `local` (a folder on disk) or `template` (any HTTP storage API). The old `Google Drive` spelling is still read. |
 | `remoteFolder` | —              | Folder that holds the session files.                                    |
 | `secrets`      | —              | Google Drive: ClientID, ClientSecret, RefreshToken — exactly three, in that order. Template: values read as `{secret0}`, `{secret1}`, …. |
 | `template`     | —              | Template service only: the storage API's `auth`, `put`, `get`, `list` and `delete` operations. |
@@ -147,9 +152,10 @@ TLS. Masks are configured per direction:
 
 - **TCP masks** — `fragment`, `sudoku`, `header-custom`, `xmc` (disguises the
   stream as Minecraft protocol traffic; requires a password, with optional
-  hostname and player usernames).
+  hostname and player usernames), plus the inbound-only `filter`.
 - **UDP masks** — `salamander`, `mkcp-legacy`, `header-custom`, `xdns`, `xicmp`,
-  `noise`, `sudoku`, `realm`, plus the client-only `udphop`. (`mkcp-legacy`
+  `noise`, `sudoku`, `realm`, plus the client-only `udphop` and the inbound-only
+  `filter`. (`mkcp-legacy`
   reproduces the old mKCP header obfuscation; `udphop` rotates the remote port —
   and optionally the remote IP — on an interval or per connection to dodge port
   blocking.)
@@ -159,6 +165,11 @@ TLS. Masks are configured per direction:
   subscription's `udphop` mask); the server still listens on its own port. Since
   Xray 26.9.9 a client hops only through the `udphop` mask, so the panel converts
   an older client `quicParams.udpHop` to it.
+
+`filter` (Xray 26.10.21) drops an inbound's connections by source IP:
+`allowedSourceIPs` admits only the listed sources, `blockedSourceIPs` drops its
+sources, and a blocked match wins. Both take CIDRs or `geoip:` entries. Share links
+and JSON subscriptions leave it out, since it only acts on the listener.
 
 FinalMask replaces the per-transport `header`/`seed` obfuscation that older Xray
 builds exposed.
@@ -204,7 +215,7 @@ The `xtls-rprx-vision` flow is fast and DPI-resistant. It's available for
 
 - the transport is raw **TCP** with **TLS** or **REALITY** security (classic
   XTLS-Vision), or
-- the transport is **XHTTP** with VLESS encryption enabled (see below).
+- VLESS encryption is enabled, on any transport (see below).
 
 Set the flow on the VLESS **client**, not the inbound. With classic Vision on
 TCP, the panel can also offer a **Vision seed** once a client uses the flow.
@@ -213,14 +224,15 @@ TCP, the panel can also offer a **Vision seed** once a client uses the flow.
 
 VLESS supports post-quantum **encryption** (ML-KEM / `mlkem768x25519`), stored in
 the inbound's `decryption` (server) and clients' `encryption` (for link
-generation). When enabled, it unlocks the Vision flow over XHTTP. Generate the
+generation). When enabled, it unlocks the Vision flow on any transport. Generate the
 keys from the panel's VLESS settings.
 
 ## Shadowsocks ciphers
 
 Shadowsocks inbounds support both classic ciphers and **Shadowsocks-2022**
-(method names starting with `2022-blake3-`). Most ciphers are multi-user;
-`2022-blake3-chacha20-poly1305` is single-user.
+(method names starting with `2022-blake3-`). `2022-blake3-chacha20-poly1305` is not
+offered for inbounds: Xray-core supports it only without users, and every panel
+inbound has clients. Outbounds can still use it.
 
 <Callout type="info">
   Transports and security must match on both ends. The client's share link

@@ -1047,6 +1047,7 @@ func (s *ClientService) bulkDelInboundClients(
 ) bulkInboundDeleteResult {
 	res := bulkInboundDeleteResult{perEmailSkipped: map[string]string{}}
 
+	defer InvalidateSubData()
 	defer lockInbound(inboundId).Unlock()
 
 	oldInbound, err := inboundSvc.GetInbound(inboundId)
@@ -1143,7 +1144,7 @@ func (s *ClientService) bulkDelInboundClients(
 	var sharedSet map[string]bool
 	if !keepTraffic {
 		var sharedErr error
-		sharedSet, sharedErr = inboundSvc.emailsUsedByOtherInbounds(foundList, inboundId)
+		sharedSet, sharedErr = inboundSvc.emailsUsedByOtherInbounds(db, foundList, inboundId)
 		if sharedErr != nil {
 			for email := range wantedEmails {
 				res.perEmailSkipped[email] = sharedErr.Error()
@@ -1505,9 +1506,6 @@ func (s *ClientService) bulkCreate(inboundSvc *InboundService, payloads []Client
 			skip(prep[idx].client.Email, reason[idx])
 			continue
 		}
-		// The client is already live after fanout; never leave a stale delete
-		// tombstone merely because applying its optional HWID limit failed.
-		withdrawClientTombstones(prep[idx].client.Email)
 		if err := s.setClientLimitHwidByEmail(prep[idx].client.Email, prep[idx].limitHwid); err != nil {
 			skip(prep[idx].client.Email, err.Error())
 			continue
@@ -1517,8 +1515,6 @@ func (s *ClientService) bulkCreate(inboundSvc *InboundService, payloads []Client
 			inserted = append(inserted, prep[idx].payloadIdx)
 		}
 	}
-	// A re-created email is a live identity again: a delete tombstone left
-	// standing makes the next node merge prune the new client's inbound links.
 	return result, inserted, needRestart, nil
 }
 
