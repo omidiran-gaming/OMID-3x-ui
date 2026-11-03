@@ -1,0 +1,159 @@
+name: Build OMID-3x-ui Windows release ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-amd64:
+    name: Build Windows x64 package
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build embedded frontend
+        shell: pwsh
+        working-directory: frontend
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Install MinGW-w64 C compiler
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-sqlite3
+            mingw-w64-x86_64-pkg-config
+
+      - name: Compile OMID-3x-ui for Windows (CGO + SQLite)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/c/hostedtoolcache/windows/go/$(ls /c/hostedtoolcache/windows/go | sort -V | tail -n1)/x64/bin:$PATH"
+          export CGO_ENABLED=1
+          export GOOS=windows
+          export GOARCH=amd64
+          export CC=x86_64-w64-mingw32-gcc
+
+          go version
+          gcc --version
+
+          PANEL_VERSION="$(tr -d '[:space:]' < internal/config/version)"
+          go run github.com/tc-hib/go-winres@v0.3.3 make --arch amd64 \
+            --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
+
+          go build -buildvcs=true -ldflags '-s -w' -o xui-release.exe -v .
+
+      - name: Assemble portable Windows folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Retry = @{ MaximumRetryCount = 5; RetryIntervalSec = 10 }
+
+          New-Item -ItemType Directory -Force -Path 'x-ui\bin' | Out-Null
+          Copy-Item 'xui-release.exe' 'x-ui\3x-ui.exe'
+          Copy-Item 'START-OMID.bat' 'x-ui\START-OMID.bat'
+          Copy-Item 'README-WINDOWS-FA.txt' 'x-ui\README-WINDOWS-FA.txt'
+          Copy-Item 'LICENSE' 'x-ui\LICENSE'
+
+          # Keep Xray in sync with the v3.11.0 source snapshot supplied for OMID.
+          $XrayUrl = 'https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-windows-64.zip'
+          curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 $XrayUrl -o 'xray-windows.zip'
+          Expand-Archive -Path 'xray-windows.zip' -DestinationPath 'x-ui\bin' -Force
+          Remove-Item 'xray-windows.zip' -Force
+          if (Test-Path 'x-ui\bin\xray.exe') {
+            Move-Item 'x-ui\bin\xray.exe' 'x-ui\bin\xray-windows-amd64.exe' -Force
+          }
+          if (!(Test-Path 'x-ui\bin\xray-windows-amd64.exe')) {
+            throw 'Xray Windows executable was not found in the official archive.'
+          }
+
+          # Replace the stock geo databases with the upstream maintained datasets.
+          $GeoFiles = @{
+            'geoip.dat'      = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat'
+            'geosite.dat'    = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat'
+            'geoip_IR.dat'   = 'https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat'
+            'geosite_IR.dat' = 'https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat'
+            'geoip_RU.dat'   = 'https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat'
+            'geosite_RU.dat'= 'https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat'
+          }
+          foreach ($Entry in $GeoFiles.GetEnumerator()) {
+            curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 $Entry.Value -o (Join-Path 'x-ui\bin' $Entry.Key)
+          }
+
+          # Resolve the latest published mtg-multi release and bundle its Windows x64 sidecar.
+          $MtgTag = (curl.exe -sf --retry 5 --retry-all-errors --retry-delay 3 -o NUL -w '%{redirect_url}' 'https://github.com/mhsanaei/mtg-multi/releases/latest') -replace '^.*/releases/tag/', ''
+          if (!$MtgTag -or $MtgTag -notmatch '^v[0-9.]+$') {
+            throw 'Could not resolve the latest mtg-multi release tag.'
+          }
+          $MtgPackage = "mtg-multi-$($MtgTag.TrimStart('v'))-windows-amd64"
+          $MtgZip = "$MtgPackage.zip"
+          $MtgUrl = "https://github.com/mhsanaei/mtg-multi/releases/download/$MtgTag/$MtgZip"
+          curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 $MtgUrl -o $MtgZip
+          Expand-Archive -Path $MtgZip -DestinationPath 'mtg-tmp' -Force
+          $MtgExe = Get-ChildItem -Path 'mtg-tmp' -Filter 'mtg-multi.exe' -Recurse | Select-Object -First 1
+          if (!$MtgExe) { throw 'mtg-multi.exe was not found in the downloaded archive.' }
+          Move-Item $MtgExe.FullName 'x-ui\bin\mtg-windows-amd64.exe' -Force
+          Remove-Item $MtgZip -Force
+          Remove-Item 'mtg-tmp' -Recurse -Force
+
+          # Include the Windows OpenSSL installer and its upstream notes.
+          Copy-Item -Path 'windows_files\*' -Destination 'x-ui' -Recurse -Force
+
+      - name: Create ZIP and SHA-256 checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ZipName = 'OMID-3x-ui-windows-amd64.zip'
+          Compress-Archive -Path '.\x-ui' -DestinationPath $ZipName -CompressionLevel Optimal -Force
+          $Hash = (Get-FileHash $ZipName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$PWD\$ZipName.sha256", "$Hash $ZipName`n")
+
+      - name: Upload downloadable package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OMID-3x-ui-windows-amd64
+          path: |
+            OMID-3x-ui-windows-amd64.zip
+            OMID-3x-ui-windows-amd64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach package to GitHub Release when building a version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            OMID-3x-ui-windows-amd64.zip
+            OMID-3x-ui-windows-amd64.zip.sha256
+          fail_on_unmatched_files: true
