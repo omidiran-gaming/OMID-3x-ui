@@ -54,6 +54,8 @@ COPY --from=builder /app/internal/web/translation /app/internal/web/translation
 COPY nginx/default.conf /etc/nginx/http.d/default.conf
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisord.conf
+COPY nginx/omid-proxy-common.conf /etc/nginx/omid-proxy-common.conf
+COPY omid-gen-routes.sh /app/omid-gen-routes.sh
 
 
 # Configure fail2ban
@@ -76,9 +78,9 @@ ENV XUI_ENABLE_FAIL2BAN="true"
 ENV XUI_PORT="8080"
 ENV XUI_SKIP_HSTS="true"
 ENV XUI_SUB_PUBLIC_HTTPS="true"
+ENV PORT="2053"
 ENV XUI_DB_TYPE=""
 ENV XUI_DB_DSN=""
 EXPOSE 2053
-VOLUME [ "/etc/x-ui" ]
 CMD [ "./x-ui" ]
 ENTRYPOINT [ "/app/DockerEntrypoint.sh" ]

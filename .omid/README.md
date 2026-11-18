@@ -4,11 +4,10 @@ This repository was initially imported from a source ZIP, so it does not have th
 
 ## Automatic update flow
 
-- GitHub Actions checks `MHSanaei/3x-ui` `main` every day at 04:17 UTC, and can also be started manually.
+- GitHub Actions (`.github/workflows/sync-upstream.yml`) checks `MHSanaei/3x-ui` every 6 hours (ref from repo variable `UPSTREAM_REF`, default `main`), and can also be started manually.
 - The latest upstream source is cloned fresh.
-- `.omid/scripts/apply_omid_overlay.py` reapplies the small, version-checked OMID overlay: Nginx reverse proxy, stable `/sub/`, `/json/`, `/clash/` paths, public HTTPS subscription URLs, and Telegram subscription URL consistency.
+- `.omid/scripts/apply_omid_overlay.py` reapplies the small, version-checked OMID overlay: Nginx reverse proxy (configurable public listeners via `OMID_RAILWAY_PORTS`, primary port `PORT`, inbounds 8081-8090 via `/wsN` `/huN` `/xhN`), `railway.json`, Dockerfile `VOLUME` removal and `PORT=2053` for Railway, stable `/sub/`, `/json/`, `/clash/` paths, public HTTPS subscription URLs, and Telegram subscription URL consistency.
 - The source tree is synchronized into this repository while preserving `.github/` and `.omid/`.
-- The ZIP-import workflow dispatches the sync/build workflow after it commits the extracted source, so the first image does not need to wait for the nightly schedule.
 - If upstream changed, the source snapshot is committed to `main` and an updated Docker image is published to `ghcr.io/omidiran-gaming/omid-3x-ui:latest`.
 
 ## Where to put future OMID customizations
@@ -19,4 +18,4 @@ Do not edit upstream-managed Go files or `Dockerfile` directly: a sync replaces 
 
 In **Settings → Actions → General → Workflow permissions**, enable **Read and write permissions**. The workflow requires `contents: write` to commit the synchronized source and `packages: write` to publish to GHCR. If those permissions are disabled, the workflow will fail rather than updating the repository or image.
 
-The workflow only publishes the new image; it does not automatically restart an external hosting service. The host must be configured to pull/redeploy `ghcr.io/omidiran-gaming/omid-3x-ui:latest` after a new image is published.
+On Railway, deploy from the GitHub repo: every sync commit to `main` triggers a redeploy. See `.omid/docs/RAILWAY-FA.md`. The GHCR image is still published for other hosts.

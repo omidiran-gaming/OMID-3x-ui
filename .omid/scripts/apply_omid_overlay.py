@@ -27,6 +27,9 @@ def copy_runtime(overlay: Path, upstream: Path) -> None:
         overlay / "runtime" / "supervisord.conf": upstream / "supervisord.conf",
         overlay / "runtime" / "nginx" / "default.conf": upstream / "nginx" / "default.conf",
         overlay / "runtime" / "nginx" / "nginx.conf": upstream / "nginx" / "nginx.conf",
+        overlay / "runtime" / "railway.json": upstream / "railway.json",
+        overlay / "runtime" / "omid-gen-routes.sh": upstream / "omid-gen-routes.sh",
+        overlay / "runtime" / "nginx" / "omid-proxy-common.conf": upstream / "nginx" / "omid-proxy-common.conf",
     }
     for src, dst in copies.items():
         if not src.is_file():
@@ -99,6 +102,8 @@ def patch_dockerfile(repo: Path) -> None:
     ensure_after(translation_copy, "COPY nginx/default.conf /etc/nginx/http.d/default.conf", "Nginx virtual host copy")
     ensure_after("COPY nginx/default.conf /etc/nginx/http.d/default.conf", "COPY nginx/nginx.conf /etc/nginx/nginx.conf", "Nginx main config copy")
     ensure_after("COPY nginx/nginx.conf /etc/nginx/nginx.conf", "COPY supervisord.conf /etc/supervisord.conf", "Supervisor config copy")
+    ensure_after("COPY supervisord.conf /etc/supervisord.conf", "COPY nginx/omid-proxy-common.conf /etc/nginx/omid-proxy-common.conf", "Nginx shared proxy snippet copy")
+    ensure_after("COPY nginx/omid-proxy-common.conf /etc/nginx/omid-proxy-common.conf", "COPY omid-gen-routes.sh /app/omid-gen-routes.sh", "OMID route generator copy")
 
     # These are normal writable temp directories used by OMID's existing Nginx config.
     if "/tmp/nginx/client_body" not in text:
@@ -127,6 +132,15 @@ def patch_dockerfile(repo: Path) -> None:
     )
     if 'ENV XUI_SUB_PUBLIC_HTTPS="true"' not in text:
         text = replace_once(text, base_env, new_env, "Dockerfile environment block")
+
+    # Railway refuses to build any Dockerfile containing the VOLUME keyword
+    # ("docker VOLUME ... is not supported, use Railway Volumes"). Persistence
+    # is provided by a Railway Volume mounted at /etc/x-ui (or a bind mount in
+    # docker-compose), so the instruction is simply removed.
+    text = re.sub(r"(?m)^[ \t]*VOLUME\b.*\n?", "", text)
+
+    # Public port the platform should route to (Nginx listens on 2053).
+    ensure_after('ENV XUI_SUB_PUBLIC_HTTPS="true"', 'ENV PORT="2053"', "PORT env")
 
     ignore = repo / ".dockerignore"
     contents = ignore.read_text() if ignore.exists() else ""
@@ -360,9 +374,10 @@ def main() -> None:
     test_src = overlay / "overlays" / "tests" / "sub_uri_base_test.go"
     if test_src.is_file():
         shutil.copy2(test_src, repo / "internal/web/service/sub_uri_base_test.go")
-    doc = overlay / "docs" / "LUCITY-REVERSE-PROXY-FA.md"
-    if doc.is_file():
-        shutil.copy2(doc, repo / "LUCITY-REVERSE-PROXY-FA.md")
+    docs = overlay / "docs"
+    if docs.is_dir():
+        for doc in sorted(docs.glob("*.md")):
+            shutil.copy2(doc, repo / doc.name)
     print(f"OMID overlay applied to {repo}")
 
 
