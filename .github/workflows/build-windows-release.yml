@@ -80,6 +80,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $Retry = @{ MaximumRetryCount = 5; RetryIntervalSec = 10 }
 
+          # Fail early with a clear message if a required Windows package asset is missing.
+          $RequiredFiles = @('START-OMID.bat', 'README-WINDOWS-FA.txt', 'LICENSE')
+          $MissingFiles = @($RequiredFiles | Where-Object { !(Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($MissingFiles.Count -gt 0) {
+            throw "Missing required Windows package file(s) in repository root: $($MissingFiles -join ', ')"
+          }
+
           New-Item -ItemType Directory -Force -Path 'x-ui\bin' | Out-Null
           Copy-Item 'xui-release.exe' 'x-ui\3x-ui.exe'
           Copy-Item 'START-OMID.bat' 'x-ui\START-OMID.bat'
