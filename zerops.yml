@@ -3,8 +3,8 @@ zerops:
     run:
       base: docker@latest
       prepareCommands:
-        - docker image pull ghcr.io/omid56test2/omid-3x-ui:latest
-      start: docker run --network=host ghcr.io/omid56test2/omid-3x-ui:latest
+        - docker image pull ghcr.io/omidiran-gaming/omid-3x-ui:latest
+      start: docker run --network=host ghcr.io/omidiran-gaming/omid-3x-ui:latest
       ports:
         - port: 2053
           httpSupport: true
