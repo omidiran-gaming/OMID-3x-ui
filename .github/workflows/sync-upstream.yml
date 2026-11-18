@@ -1,0 +1,96 @@
+name: Sync Sanaei upstream and redeploy
+
+# Pulls the latest MHSanaei/3x-ui, re-applies the OMID overlay (.omid/), checks
+# that it still compiles, then commits to main. Railway watches main and
+# redeploys automatically on every new commit.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: 'Upstream branch or tag (empty = repo variable UPSTREAM_REF, else main)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: write
+  packages: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Clone upstream
+        env:
+          REF: ${{ inputs.upstream_ref || vars.UPSTREAM_REF || 'main' }}
+        run: |
+          set -euo pipefail
+          echo "Upstream ref: $REF"
+          git clone --depth 1 --branch "$REF" https://github.com/MHSanaei/3x-ui.git "$RUNNER_TEMP/upstream"
+
+      - name: Apply overlay and sync source tree
+        id: sync
+        run: |
+          set -euo pipefail
+          python3 .omid/scripts/sync_upstream.py \
+            --upstream "$RUNNER_TEMP/upstream" \
+            --repo "$GITHUB_WORKSPACE"
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing to commit."
+          fi
+
+      - name: Set up Go
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Fail before committing if upstream + overlay no longer compile; Railway
+      # then keeps running the last good version.
+      - name: Compile check (overlay safety)
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          # package web embeds the built frontend; a stub is enough to compile.
+          mkdir -p internal/web/dist
+          touch internal/web/dist/.keep
+          go build ./...
+          go test ./internal/web/service/ -run 'TestBuildSubURIBase' -count=1
+          rm -rf internal/web/dist
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Sync Sanaei upstream ${UPSTREAM_SHA:0:7} + OMID overlay"
+          git push
+
+      # Pushes made with GITHUB_TOKEN do not start other workflows, so start the
+      # (optional) GHCR image build explicitly. Railway deploys from the push itself.
+      - name: Trigger image build
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build-publish-image.yml --ref "${GITHUB_REF_NAME}"
