@@ -364,18 +364,19 @@ func (s *InboundService) adjustTraffics(tx *gorm.DB, dbClientTraffics []*xray.Cl
 // peers fail it without publicKey/allowedIPs, and a failed add restarts Xray.
 func coreUserFromClient(c *model.Client, cipher string) map[string]any {
 	return map[string]any{
-		"email":        c.Email,
-		"id":           c.ID,
-		"auth":         c.Auth,
-		"security":     c.Security,
-		"flow":         c.Flow,
-		"password":     c.Password,
-		"cipher":       cipher,
-		"publicKey":    c.PublicKey,
-		"allowedIPs":   c.AllowedIPs,
-		"preSharedKey": c.PreSharedKey,
-		"keepAlive":    keepAliveStr(c.KeepAliveSeconds()),
-		"reverse":      c.Reverse,
+		"email":            c.Email,
+		"id":               c.ID,
+		"auth":             c.Auth,
+		"security":         c.Security,
+		"flow":             c.Flow,
+		"password":         c.Password,
+		"cipher":           cipher,
+		"publicKey":        c.PublicKey,
+		"allowedIPs":       c.AllowedIPs,
+		"preSharedKey":     c.PreSharedKey,
+		"keepAlive":        keepAliveStr(c.KeepAliveSeconds()),
+		"reverse":          c.Reverse,
+		"wireguardDevices": c.WireguardDevices,
 	}
 }
 
@@ -1084,7 +1085,7 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 			emailExpr,
 		)
 		stillSet := make(map[string]struct{}, len(rowEmails))
-		for _, batch := range chunkStrings(emailSpellings(rowEmails), sqlInChunk) {
+		for _, batch := range chunkStrings(EmailSpellings(rowEmails), sqlInChunk) {
 			var stillReferenced []string
 			if err := tx.Raw(stillQuery, batch, batch).Scan(&stillReferenced).Error; err != nil {
 				return err
@@ -1099,7 +1100,7 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 				toDelete = append(toDelete, e)
 			}
 		}
-		for _, batch := range chunkStrings(emailSpellings(toDelete), sqlInChunk) {
+		for _, batch := range chunkStrings(EmailSpellings(toDelete), sqlInChunk) {
 			if err := tx.Where("LOWER(email) IN ? OR email IN ?", batch, batch).Delete(xray.ClientTraffic{}).Error; err != nil {
 				return err
 			}
