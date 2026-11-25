@@ -2187,6 +2187,52 @@
         ],
         "type": "object"
       },
+      "ClientChangeLog": {
+        "description": "ClientChangeLog records one metadata change to a client: one row per\nchanged field, newest read first in the client's usage history.",
+        "properties": {
+          "at": {
+            "example": 1735689600000,
+            "format": "int64",
+            "type": "integer"
+          },
+          "email": {
+            "example": "user1@example.com",
+            "type": "string"
+          },
+          "field": {
+            "example": "dataLimit",
+            "type": "string"
+          },
+          "id": {
+            "example": 14825,
+            "format": "int64",
+            "type": "integer"
+          },
+          "newValue": {
+            "example": "21474836480",
+            "type": "string"
+          },
+          "oldValue": {
+            "example": "10737418240",
+            "type": "string"
+          },
+          "source": {
+            "description": "panel | tgbot | auto-renew",
+            "example": "panel",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "email",
+          "field",
+          "id",
+          "newValue",
+          "oldValue",
+          "source"
+        ],
+        "type": "object"
+      },
       "ClientInbound": {
         "properties": {
           "clientId": {
@@ -2208,6 +2254,36 @@
           "createdAt",
           "flowOverride",
           "inboundId"
+        ],
+        "type": "object"
+      },
+      "ClientNodeUsage": {
+        "description": "ClientNodeUsage is one node's counters for a client since its last reset.",
+        "properties": {
+          "down": {
+            "example": 2097152,
+            "format": "int64",
+            "type": "integer"
+          },
+          "nodeId": {
+            "example": 7,
+            "type": "integer"
+          },
+          "nodeName": {
+            "example": "de-fra-1",
+            "type": "string"
+          },
+          "up": {
+            "example": 1048576,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "down",
+          "nodeId",
+          "nodeName",
+          "up"
         ],
         "type": "object"
       },
@@ -2738,6 +2814,107 @@
           "total",
           "up",
           "uuid"
+        ],
+        "type": "object"
+      },
+      "ClientTrafficWindow": {
+        "description": "ClientTrafficWindow is one closed traffic window of a client: usage zeroed at a\nreset or an auto-renewal; lifetime = SUM(rows) + live counters.",
+        "properties": {
+          "at": {
+            "example": 1735689600000,
+            "format": "int64",
+            "type": "integer"
+          },
+          "down": {
+            "example": 2097152,
+            "format": "int64",
+            "type": "integer"
+          },
+          "email": {
+            "example": "user1@example.com",
+            "type": "string"
+          },
+          "id": {
+            "example": 14825,
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "description": "reset | renew | earlier",
+            "example": "reset",
+            "type": "string"
+          },
+          "up": {
+            "example": 1048576,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "down",
+          "email",
+          "id",
+          "reason",
+          "up"
+        ],
+        "type": "object"
+      },
+      "ClientUsageHistory": {
+        "description": "ClientUsageHistory is what the client editor's history button shows.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ClientChangeLog"
+            },
+            "type": "array"
+          },
+          "currentDown": {
+            "example": 2097152,
+            "format": "int64",
+            "type": "integer"
+          },
+          "currentUp": {
+            "example": 1048576,
+            "format": "int64",
+            "type": "integer"
+          },
+          "email": {
+            "example": "user1@example.com",
+            "type": "string"
+          },
+          "lifetimeDown": {
+            "example": 21474836480,
+            "format": "int64",
+            "type": "integer"
+          },
+          "lifetimeUp": {
+            "example": 10737418240,
+            "format": "int64",
+            "type": "integer"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/ClientNodeUsage"
+            },
+            "type": "array"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ClientTrafficWindow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changes",
+          "currentDown",
+          "currentUp",
+          "email",
+          "lifetimeDown",
+          "lifetimeUp",
+          "nodes",
+          "windows"
         ],
         "type": "object"
       },
@@ -4585,6 +4762,34 @@
           "tag",
           "total",
           "up"
+        ],
+        "type": "object"
+      },
+      "PanelRestart": {
+        "description": "PanelRestart describes the listener that took the restart call and the one that follows.",
+        "properties": {
+          "nextPort": {
+            "example": 2053,
+            "type": "integer"
+          },
+          "nextTls": {
+            "example": false,
+            "type": "boolean"
+          },
+          "port": {
+            "example": 2053,
+            "type": "integer"
+          },
+          "tls": {
+            "example": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "nextPort",
+          "nextTls",
+          "port",
+          "tls"
         ],
         "type": "object"
       },
@@ -9944,7 +10149,7 @@
           {
             "name": "keepTraffic",
             "in": "query",
-            "required": true,
+            "required": false,
             "description": "Pass 1 to retain the xray_client_traffic row after deletion.",
             "schema": {
               "type": "integer"
@@ -9999,7 +10204,7 @@
           {
             "name": "keepTraffic",
             "in": "query",
-            "required": true,
+            "required": false,
             "description": "Pass 1 to retain the xray_client_traffic row after deletion.",
             "schema": {
               "type": "integer"
@@ -11624,7 +11829,7 @@
         "tags": [
           "Clients"
         ],
-        "summary": "List all client groups with their member counts. Merges persisted groups (rows in client_groups, including empty placeholders) with the distinct group_name values currently set on clients. Sorted alphabetically (case-insensitive).",
+        "summary": "List all client groups with their member counts and the host groups bound to each. Merges persisted groups (rows in client_groups, including empty placeholders) with the distinct group_name values currently set on clients. Sorted alphabetically (case-insensitive).",
         "operationId": "get_panel_api_clients_groups",
         "responses": {
           "200": {
@@ -11647,14 +11852,84 @@
                   "success": true,
                   "obj": [
                     {
+                      "id": 1,
                       "name": "customer-a",
-                      "clientCount": 5
+                      "clientCount": 5,
+                      "hostGroupIds": [
+                        "cdn-front"
+                      ]
                     },
                     {
+                      "id": 2,
                       "name": "internal",
-                      "clientCount": 0
+                      "clientCount": 0,
+                      "hostGroupIds": []
                     }
                   ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/clients/groups/{name}/hosts": {
+      "post": {
+        "tags": [
+          "Clients"
+        ],
+        "summary": "Replace the host groups attached to a client group. Clients in this group receive the bound host groups instead of the inbound default host pool; other clients are unaffected. An empty array clears the bindings. Returns the saved host group IDs.",
+        "operationId": "post_panel_api_clients_groups_name_hosts",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Group name (URL-encoded).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "example": {
+                "hostGroupIds": [
+                  "cdn-front"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": {
+                    "hostGroupIds": [
+                      "cdn-front"
+                    ]
+                  }
                 }
               }
             }
@@ -11716,7 +11991,7 @@
         "tags": [
           "Clients"
         ],
-        "summary": "Create a new empty (placeholder) group. The group becomes selectable in client forms and the filter drawer even before any client is added to it. Errors if a group with the same name already exists.",
+        "summary": "Create a new group, optionally with host rules bound to it. The group becomes selectable in client forms and the filter drawer even before any client is added to it. Host group IDs are validated before the group is created. Errors if a group with the same name already exists.",
         "operationId": "post_panel_api_clients_groups_create",
         "requestBody": {
           "required": true,
@@ -11726,7 +12001,10 @@
                 "type": "object"
               },
               "example": {
-                "name": "customer-a"
+                "name": "customer-a",
+                "hostGroupIds": [
+                  "cdn-front"
+                ]
               }
             }
           }
@@ -11765,7 +12043,7 @@
         "tags": [
           "Clients"
         ],
-        "summary": "Rename a group. The new name is applied to the client_groups row AND propagated to every matching client (both clients.group_name and the client entry inside every owning inbound's settings JSON) in a single transaction. Returns the number of clients whose label was updated.",
+        "summary": "Rename a group and optionally replace its host rules in one transaction. The new name is applied to the client_groups row AND propagated to every matching client (both clients.group_name and the client entry inside every owning inbound's settings JSON). Omit hostGroupIds to leave the bindings unchanged; send an empty array to clear them. Returns the number of clients whose label was updated.",
         "operationId": "post_panel_api_clients_groups_rename",
         "requestBody": {
           "required": true,
@@ -11776,7 +12054,10 @@
               },
               "example": {
                 "oldName": "customer-a",
-                "newName": "tier-1"
+                "newName": "tier-1",
+                "hostGroupIds": [
+                  "cdn-front"
+                ]
               }
             }
           }
@@ -12563,6 +12844,88 @@
                     "total": 10737418240,
                     "up": 1048576,
                     "uuid": "e18c9a96-71bf-48d4-933f-8b9a46d4290c"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/clients/usageHistory/{email}": {
+      "get": {
+        "tags": [
+          "Clients"
+        ],
+        "summary": "Usage and change history for one client, behind the edit modal's history button. lifetimeUp/lifetimeDown are every archived window plus the client's live counters; currentUp/currentDown are the still-open window. windows lists the closed cycles, newest first (reason: reset | renew | earlier): one is archived whenever a traffic reset or an auto-renewal zeroes the client's counters, the newest 100 are kept and older ones are folded into a single earlier row, so the lifetime total does not change. nodes is the per-node upload/download accumulated since the last reset. changes is the metadata change log, newest first, capped at the newest 200 rows: one row per changed field (subId, expiry, dataLimit, enable, limitIp, limitHwid, adTag, group, renewalPlan) and a name row for a rename; source is panel | tgbot | auto-renew. A renamed client keeps its history under the new email. The history belongs to the client: once the client is deleted, its history is removed within five minutes. Requires an admin token or a panel login session.",
+        "operationId": "get_panel_api_clients_usageHistory_email",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "description": "Client email (unique across the panel).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {
+                      "$ref": "#/components/schemas/ClientUsageHistory"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": {
+                    "changes": [
+                      {
+                        "at": 1735689600000,
+                        "email": "user1@example.com",
+                        "field": "dataLimit",
+                        "id": 14825,
+                        "newValue": "21474836480",
+                        "oldValue": "10737418240",
+                        "source": "panel"
+                      }
+                    ],
+                    "currentDown": 2097152,
+                    "currentUp": 1048576,
+                    "email": "user1@example.com",
+                    "lifetimeDown": 21474836480,
+                    "lifetimeUp": 10737418240,
+                    "nodes": [
+                      {
+                        "down": 2097152,
+                        "nodeId": 7,
+                        "nodeName": "de-fra-1",
+                        "up": 1048576
+                      }
+                    ],
+                    "windows": [
+                      {
+                        "at": 1735689600000,
+                        "down": 2097152,
+                        "email": "user1@example.com",
+                        "id": 14825,
+                        "reason": "reset",
+                        "up": 1048576
+                      }
+                    ]
                   }
                 }
               }
@@ -15474,6 +15837,7 @@
         ],
         "summary": "Restart the entire 3x-ui process after a 3-second grace period. The connection drops immediately; the panel comes back online ~5-10 seconds later.",
         "operationId": "post_panel_api_setting_restartPanel",
+        "description": "The answer names the listener that took the call (port, tls) and the one the restarted panel opens (nextPort, nextTls), with XUI_PORT and an unloadable certificate pair already applied. A client reaching the panel through a proxy or a port mapping compares port and tls with the address it used, and follows a change only where they match.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -15488,7 +15852,18 @@
                     "msg": {
                       "type": "string"
                     },
-                    "obj": {}
+                    "obj": {
+                      "$ref": "#/components/schemas/PanelRestart"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": {
+                    "nextPort": 2053,
+                    "nextTls": false,
+                    "port": 2053,
+                    "tls": false
                   }
                 }
               }

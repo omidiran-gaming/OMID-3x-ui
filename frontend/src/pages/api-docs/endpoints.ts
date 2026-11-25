@@ -1342,6 +1342,7 @@ export const sections: readonly Section[] = [
             in: 'query',
             type: 'integer',
             desc: 'Pass 1 to retain the xray_client_traffic row after deletion.',
+            optional: true,
           },
         ],
         response: '{\n  "success": true,\n  "msg": "Client deleted"\n}',
@@ -1360,6 +1361,7 @@ export const sections: readonly Section[] = [
             in: 'query',
             type: 'integer',
             desc: 'Pass 1 to retain the xray_client_traffic row after deletion.',
+            optional: true,
           },
         ],
         response: '{\n  "success": true,\n  "msg": "Client deleted"\n}',
@@ -1702,9 +1704,18 @@ export const sections: readonly Section[] = [
         method: 'GET',
         path: '/panel/api/clients/groups',
         summary:
-          'List all client groups with their member counts. Merges persisted groups (rows in client_groups, including empty placeholders) with the distinct group_name values currently set on clients. Sorted alphabetically (case-insensitive).',
+          'List all client groups with their member counts and the host groups bound to each. Merges persisted groups (rows in client_groups, including empty placeholders) with the distinct group_name values currently set on clients. Sorted alphabetically (case-insensitive).',
         response:
-          '{\n  "success": true,\n  "obj": [\n    { "name": "customer-a", "clientCount": 5 },\n    { "name": "internal", "clientCount": 0 }\n  ]\n}',
+          '{\n  "success": true,\n  "obj": [\n    { "id": 1, "name": "customer-a", "clientCount": 5, "hostGroupIds": ["cdn-front"] },\n    { "id": 2, "name": "internal", "clientCount": 0, "hostGroupIds": [] }\n  ]\n}',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/clients/groups/:name/hosts',
+        summary:
+          'Replace the host groups attached to a client group. Clients in this group receive the bound host groups instead of the inbound default host pool; other clients are unaffected. An empty array clears the bindings. Returns the saved host group IDs.',
+        params: [{ name: 'name', in: 'path', type: 'string', desc: 'Group name (URL-encoded).' }],
+        body: '{\n  "hostGroupIds": ["cdn-front"]\n}',
+        response: '{\n  "success": true,\n  "obj": {\n    "hostGroupIds": ["cdn-front"]\n  }\n}',
       },
       {
         method: 'GET',
@@ -1718,16 +1729,16 @@ export const sections: readonly Section[] = [
         method: 'POST',
         path: '/panel/api/clients/groups/create',
         summary:
-          'Create a new empty (placeholder) group. The group becomes selectable in client forms and the filter drawer even before any client is added to it. Errors if a group with the same name already exists.',
-        body: '{\n  "name": "customer-a"\n}',
+          'Create a new group, optionally with host rules bound to it. The group becomes selectable in client forms and the filter drawer even before any client is added to it. Host group IDs are validated before the group is created. Errors if a group with the same name already exists.',
+        body: '{\n  "name": "customer-a",\n  "hostGroupIds": ["cdn-front"]\n}',
         response: '{\n  "success": true,\n  "obj": {\n    "name": "customer-a"\n  }\n}',
       },
       {
         method: 'POST',
         path: '/panel/api/clients/groups/rename',
         summary:
-          "Rename a group. The new name is applied to the client_groups row AND propagated to every matching client (both clients.group_name and the client entry inside every owning inbound's settings JSON) in a single transaction. Returns the number of clients whose label was updated.",
-        body: '{\n  "oldName": "customer-a",\n  "newName": "tier-1"\n}',
+          "Rename a group and optionally replace its host rules in one transaction. The new name is applied to the client_groups row AND propagated to every matching client (both clients.group_name and the client entry inside every owning inbound's settings JSON). Omit hostGroupIds to leave the bindings unchanged; send an empty array to clear them. Returns the number of clients whose label was updated.",
+        body: '{\n  "oldName": "customer-a",\n  "newName": "tier-1",\n  "hostGroupIds": ["cdn-front"]\n}',
         response: '{\n  "success": true,\n  "obj": {\n    "affected": 5\n  }\n}',
       },
       {
@@ -1869,6 +1880,21 @@ export const sections: readonly Section[] = [
           },
         ],
         responseSchema: 'ClientTraffic',
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/clients/usageHistory/:email',
+        summary:
+          "Usage and change history for one client, behind the edit modal's history button. lifetimeUp/lifetimeDown are every archived window plus the client's live counters; currentUp/currentDown are the still-open window. windows lists the closed cycles, newest first (reason: reset | renew | earlier): one is archived whenever a traffic reset or an auto-renewal zeroes the client's counters, the newest 100 are kept and older ones are folded into a single earlier row, so the lifetime total does not change. nodes is the per-node upload/download accumulated since the last reset. changes is the metadata change log, newest first, capped at the newest 200 rows: one row per changed field (subId, expiry, dataLimit, enable, limitIp, limitHwid, adTag, group, renewalPlan) and a name row for a rename; source is panel | tgbot | auto-renew. A renamed client keeps its history under the new email. The history belongs to the client: once the client is deleted, its history is removed within five minutes. Requires an admin token or a panel login session.",
+        params: [
+          {
+            name: 'email',
+            in: 'path',
+            type: 'string',
+            desc: 'Client email (unique across the panel).',
+          },
+        ],
+        responseSchema: 'ClientUsageHistory',
       },
       {
         method: 'GET',
@@ -2312,6 +2338,9 @@ export const sections: readonly Section[] = [
         path: '/panel/api/setting/restartPanel',
         summary:
           'Restart the entire 3x-ui process after a 3-second grace period. The connection drops immediately; the panel comes back online ~5-10 seconds later.',
+        description:
+          'The answer names the listener that took the call (port, tls) and the one the restarted panel opens (nextPort, nextTls), with XUI_PORT and an unloadable certificate pair already applied. A client reaching the panel through a proxy or a port mapping compares port and tls with the address it used, and follows a change only where they match.',
+        responseSchema: 'PanelRestart',
       },
       {
         method: 'POST',
