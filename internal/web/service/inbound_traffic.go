@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -153,13 +154,15 @@ func (s *InboundService) addClientTraffic(tx *gorm.DB, traffics []*xray.ClientTr
 	// shared row then carried the node inbound's id (AddClientStat used to use
 	// OnConflict DoNothing and never refreshed it; it now refreshes inbound_id on
 	// conflict, but this filter was removed rather than relying on that ordering).
-	err = tx.Model(xray.ClientTraffic{}).
-		Where("email IN (?)", emails).
-		Order("id").
-		Find(&dbClientTraffics).Error
-	if err != nil {
-		return err
+	for _, batch := range chunkStrings(emails, sqlInChunk) {
+		var page []*xray.ClientTraffic
+		if err = tx.Model(xray.ClientTraffic{}).Where("email IN ?", batch).Find(&page).Error; err != nil {
+			return err
+		}
+		dbClientTraffics = append(dbClientTraffics, page...)
 	}
+	// One id order across the chunks keeps the row UPDATEs below lock-compatible.
+	slices.SortFunc(dbClientTraffics, func(a, b *xray.ClientTraffic) int { return cmp.Compare(a.Id, b.Id) })
 
 	// Avoid empty slice error
 	if len(dbClientTraffics) == 0 {
@@ -679,6 +682,53 @@ func (s *InboundService) UpdateClientStat(tx *gorm.DB, email string, client *mod
 			"reset_weekday": client.ResetWeekday,
 			"reset_max":     client.ResetMax,
 		}).Error
+}
+
+// storedClientLifecycle is the part of a client_traffics row its client's settings
+// decide. A nil field is a NULL, which no configured value equals.
+type storedClientLifecycle struct {
+	Email        string
+	Enable       *bool
+	ExpiryTime   *int64
+	Total        *int64
+	Reset        *int
+	ResetDay     *int
+	ResetMax     *int
+	ResetWeekday *int
+}
+
+func (row *storedClientLifecycle) holds(client *model.Client) bool {
+	return row.Enable != nil && *row.Enable == client.Enable &&
+		row.ExpiryTime != nil && *row.ExpiryTime == client.ExpiryTime &&
+		row.Total != nil && *row.Total == client.TotalGB &&
+		row.Reset != nil && *row.Reset == client.Reset &&
+		row.ResetDay != nil && *row.ResetDay == client.ResetDay &&
+		row.ResetMax != nil && *row.ResetMax == client.ResetMax &&
+		row.ResetWeekday != nil && *row.ResetWeekday == client.ResetWeekday
+}
+
+// updateDriftedClientStats reads the rows a chunk at a time and rewrites only those that
+// differ: one statement per kept client made saving a 100k-client inbound take a minute.
+func (s *InboundService) updateDriftedClientStats(tx *gorm.DB, emails []string, clients map[string]*model.Client) error {
+	for _, batch := range chunkStrings(emails, sqlInChunk) {
+		var rows []storedClientLifecycle
+		if err := tx.Model(xray.ClientTraffic{}).
+			Select("email", "enable", "expiry_time", "total", "reset", "reset_day", "reset_max", "reset_weekday").
+			Where("email IN ?", batch).
+			Find(&rows).Error; err != nil {
+			return err
+		}
+		for i := range rows {
+			client := clients[rows[i].Email]
+			if client == nil || rows[i].holds(client) {
+				continue
+			}
+			if err := s.UpdateClientStat(tx, rows[i].Email, client); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *InboundService) DelClientStat(tx *gorm.DB, email string) error {
