@@ -447,6 +447,38 @@ export interface ApiTokenView {
   token?: string;
 }
 
+export interface AttachCandidate {
+  alreadyAttached: boolean;
+  comment: string;
+  email: string;
+  enable: boolean;
+  group: string;
+  id: number;
+  inScope: boolean;
+}
+
+export interface AttachCandidatePage {
+  eligible: number;
+  groups: string[];
+  items: AttachCandidate[];
+  maxId?: number;
+  scopeToken?: string;
+  total: number;
+}
+
+export interface AttachJobStatus {
+  ended: string;
+  error?: string;
+  result?: AttachSelectionResult | null;
+  running: boolean;
+}
+
+export interface AttachSelectionResult {
+  attached: number;
+  errors: number;
+  skipped: number;
+}
+
 export interface Blocker {
   code: BlockerCode;
   detail?: string;
